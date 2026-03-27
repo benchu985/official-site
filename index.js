@@ -2,6 +2,7 @@ const express = require('express');
 const readline = require('readline');
 const app = express();
 const PORT = 2000;
+let currentAsk = null;
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', '*');
@@ -11,9 +12,28 @@ app.use((req, res, next) => {
 });
 app.use(express.json());
 function askHuman() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('请输入官网回复内容: ', (answer) => { rl.close(); resolve(answer); });
+    const lines = [];
+    let timer = null;
+    console.log('请输入官网回复内容 (粘贴完成后自动发送):');
+    const done = () => {
+      clearTimeout(timer);
+      rl.close();
+      currentAsk = null;
+      resolve(lines.join('\n'));
+    };
+    currentAsk = () => {
+      clearTimeout(timer);
+      rl.close();
+      currentAsk = null;
+      reject(new Error('cancelled'));
+    };
+    rl.on('line', (line) => {
+      lines.push(line);
+      clearTimeout(timer);
+      timer = setTimeout(done, 500);
+    });
   });
 }
 const modelsData = { object: 'list', data: [{ id: 'own', object: 'model', created: 1700000000, owned_by: 'official-site', permission: [{ id: 'modelperm-own', object: 'model_permission', created: 1700000000, allow_create_engine: false, allow_sampling: true, allow_logprobs: true, allow_search_indices: false, allow_view: true, allow_fine_tuning: false, organization: '*', group: null, is_blocking: false }], root: 'own', parent: null }] };
@@ -23,7 +43,23 @@ app.get('/v1/models/:model', (req, res) => res.json(modelsData.data[0]));
 app.get('/models/:model', (req, res) => res.json(modelsData.data[0]));
 app.post('/v1/chat/completions', async (req, res) => {
   const { stream, model } = req.body;
-  const humanReply = await askHuman();
+  let cancelled = false;
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      cancelled = true;
+      if (currentAsk) {
+        currentAsk();
+        console.log('⚠️ 客户端已断开，输入已取消');
+      }
+    }
+  });
+  let humanReply;
+  try {
+    humanReply = await askHuman();
+  } catch (e) {
+    return;
+  }
+  if (cancelled) return;
   const messageId = 'chatcmpl-' + Math.random().toString(36).slice(2);
   const created = Math.floor(Date.now() / 1000);
   if (stream) {
